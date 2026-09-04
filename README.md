@@ -1,5 +1,7 @@
 # pq-consensus-bandwidth
 
+[![test](https://github.com/tsotchke-corporation/pq-consensus-bandwidth/actions/workflows/test.yml/badge.svg)](https://github.com/tsotchke-corporation/pq-consensus-bandwidth/actions/workflows/test.yml)
+
 What post-quantum signatures cost a CometBFT chain on the wire, measured rather than estimated.
 
 Signature size is the whole cost model for post-quantum consensus, and it is the number most
@@ -67,11 +69,11 @@ Falcon signatures vary in length; its figures use the published planning average
 CometBFT v0.40.0. If an upgrade changes vote or commit encoding, the test fails and the published
 numbers are known to be stale — which is the point of pinning them.
 
-One test exists because of a bug worth naming: an earlier version of this model searched validator
-counts only up to 512, so every cell in the ceiling table read 512 and the table described the
-search rather than the network. `TestCeilingIsNotSearchLimited` fails if a reported ceiling is
-really the search bound.
+A ceiling model has a specific failure mode worth guarding: if the search bound is too low or its
+step too coarse, every cell reports the search rather than the link, and the table looks plausible
+while measuring nothing. `TestCeilingIsNotSearchLimited` fails if a reported ceiling is really the
+search bound, and the search steps by one so no figure is silently rounded down.
 
 ## Licence
 
-Apache-2.0.
+Apache-2.0. Copyright 2026 Tsotchke Corporation.

@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -v ./...
+      - name: measure
+        run: go run . --schemes ed25519,ml-dsa-65,composite-ed25519-ml-dsa-65

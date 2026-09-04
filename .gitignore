@@ -1,1 +1,6 @@
+# build output
 /pq-consensus-bandwidth
+
+# ICC working state — local tooling, not part of the published tool
+/.icc/
+/artifacts/

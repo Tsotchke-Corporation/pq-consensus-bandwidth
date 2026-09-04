@@ -1,4 +1,4 @@
-module github.com/tsotchke/pq-consensus-bandwidth
+module github.com/tsotchke-corporation/pq-consensus-bandwidth
 
 go 1.25.0
 
