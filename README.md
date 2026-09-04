@@ -104,10 +104,42 @@ Commit signatures are stored in every block forever. At 100 validators and 6-sec
 1.6 TiB is 1.76 TB, which independently corroborates the ~1.8 TB/year figure in the Cosmos SDK
 v0.55 upgrade guide for the same configuration.
 
+### Commit size by validator count
+
+ML-DSA-65, against an 8 MiB `block.max_bytes`:
+
+| Validators | Commit | Share of block |
+|---:|---:|---:|
+| 4 | 13,486 B | 0.16% |
+| 16 | 53,710 B | 0.64% |
+| 64 | 214,606 B | 2.56% |
+| 100 | 335,278 B | 4.00% |
+| 150 | 502,878 B | 5.99% |
+| 175 | 586,678 B | 6.99% |
+
+Commit size is not the binding constraint for most chains. Gossip is.
+
 ### Validator ceiling
 
-Largest validator set whose per-node **outbound** vote gossip fits the budget, at 100 Mbit/s,
-1-second rounds, 50 peers:
+Largest validator set whose per-node **outbound** vote gossip fits the budget. ML-DSA-65:
+
+| Link | 1 s round | 3 s round | 6 s round |
+|---|---:|---:|---:|
+| **50 Mbit/s**, 10 peers | 91 | 273 | 547 |
+| 50 Mbit/s, 20 peers | 45 | 136 | 273 |
+| 50 Mbit/s, 50 peers | 18 | 54 | 109 |
+| **100 Mbit/s**, 10 peers | 182 | 547 | 1,094 |
+| 100 Mbit/s, 20 peers | 91 | 273 | 547 |
+| 100 Mbit/s, 50 peers | 36 | 109 | 218 |
+| **1 Gbit/s**, 10 peers | 1,823 | 5,471 | 10,942 |
+| 1 Gbit/s, 20 peers | 911 | 2,735 | 5,471 |
+| 1 Gbit/s, 50 peers | 364 | 1,094 | 2,188 |
+
+Peer count matters more than link speed here: at 100 Mbit/s and 1-second rounds, going from 10
+peers to 50 costs you five times the validator headroom. A chain that cannot widen its links can
+often narrow its gossip fanout instead.
+
+By scheme, at 100 Mbit/s, 1-second rounds, 50 peers:
 
 | Scheme | Max validators |
 |---|---:|
@@ -181,7 +213,9 @@ fits on paper can still miss rounds. Measure round time on your own hardware.
 readiness, `block.max_bytes` retuning, mixed validator sets during rotation, or custom staking
 modules. The Cosmos SDK v0.55 upgrade guide is the authority on those.
 
-Falcon signature lengths vary; its rows use the published planning average.
+Falcon signature lengths vary. The tables use the published average; the tool also reports the
+practical maximum, where a Falcon-512 precommit is 870 B rather than 784 B. Size a link budget on
+the maximum — an average under-provisions the tail, and the tail is where rounds are missed.
 
 ## Licence
 

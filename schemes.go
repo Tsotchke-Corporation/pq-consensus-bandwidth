@@ -18,8 +18,11 @@ type Scheme struct {
 	PubKeyBytes int
 	// Variable marks schemes whose signatures are not a fixed length, where
 	// SigBytes is the figure the scheme's authors publish for planning.
-	Variable bool
-	Note     string
+	// SigBytesMax is the practical maximum for such a scheme; sizing a link
+	// budget on the average silently under-provisions the tail.
+	Variable    bool
+	SigBytesMax int
+	Note        string
 }
 
 // schemes are the parameter sets a chain realistically evaluates. Sizes are the
@@ -42,12 +45,12 @@ var schemes = []Scheme{
 		Note: "FIPS 204, NIST security category 5",
 	},
 	{
-		Name: "falcon-512", SigBytes: 666, PubKeyBytes: 897, Variable: true,
-		Note: "compressed signatures vary in length; 666 B is the published average, 752 B the practical maximum",
+		Name: "falcon-512", SigBytes: 666, PubKeyBytes: 897, Variable: true, SigBytesMax: 752,
+		Note: "compressed signatures vary in length; 666 B average, 752 B practical maximum",
 	},
 	{
-		Name: "falcon-1024", SigBytes: 1280, PubKeyBytes: 1793, Variable: true,
-		Note: "compressed signatures vary in length; 1280 B is the published average",
+		Name: "falcon-1024", SigBytes: 1280, PubKeyBytes: 1793, Variable: true, SigBytesMax: 1462,
+		Note: "compressed signatures vary in length; 1280 B average, 1462 B practical maximum",
 	},
 	{
 		Name: "slh-dsa-128s", SigBytes: 7856, PubKeyBytes: 32,

@@ -84,7 +84,16 @@ func report(scheme Scheme, counts []int, blockBytes int64, links []int64, rounds
 		fmt.Printf("  %s\n", scheme.Note)
 	}
 	if scheme.Variable {
-		fmt.Printf("  signature length varies; sizes below use the planning figure above\n")
+		fmt.Printf("  signature length varies; tables below use the average\n")
+		if scheme.SigBytesMax > 0 {
+			worst := scheme
+			worst.SigBytes = scheme.SigBytesMax
+			ws, err := Measure(worst, counts)
+			if err == nil {
+				fmt.Printf("  at the %d B maximum a precommit is %d B rather than %d B; size link budgets on the maximum, not the average\n",
+					scheme.SigBytesMax, ws.PrecommitBlock, mustPrecommit(scheme, counts))
+			}
+		}
 	}
 	fmt.Println()
 
@@ -313,4 +322,14 @@ func reportHandshake(names []string) error {
 	fmt.Println("  (p2p/key.go, LoadOrGenNodeKey -> ed25519.GenPrivKey).")
 	fmt.Println("Enabling ML-DSA-65 consensus keys changes neither. It is a different surface.")
 	return nil
+}
+
+// mustPrecommit returns the average-case precommit size, for the variable-length
+// note. It returns 0 rather than failing: the note is informational.
+func mustPrecommit(scheme Scheme, counts []int) int {
+	s, err := Measure(scheme, counts)
+	if err != nil {
+		return 0
+	}
+	return s.PrecommitBlock
 }
