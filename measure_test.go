@@ -348,3 +348,79 @@ func TestGossipModelIsBoundedByTheUpperBound(t *testing.T) {
 		}
 	}
 }
+
+// TestRequirementInvertsTheCeiling checks the arithmetic that makes the "what
+// would it take" answer exact rather than rhetorical: a requirement computed
+// for a target must be consistent with the ceiling computed from that cost.
+func TestRequirementInvertsTheCeiling(t *testing.T) {
+	b := Budget{LinkBitsPerSec: 100_000_000, RoundSeconds: 1, Peers: 50}
+	for _, target := range []Target{{"a", 36}, {"b", 100}, {"c", 180}, {"d", 1000}} {
+		req := Require(target, b)
+		if req.MaxCostPerRound <= 0 {
+			t.Fatalf("%d validators: no cost ceiling computed", target.Validators)
+		}
+		// A scheme costing exactly the ceiling must admit at least the target.
+		c := DeriveCeiling(int(req.MaxCostPerRound), b)
+		if c.MaxValidators < target.Validators {
+			t.Errorf("%d validators requires <=%d B/round, but a scheme at that cost admits only %d",
+				target.Validators, req.MaxCostPerRound, c.MaxValidators)
+		}
+	}
+}
+
+// TestPostQuantumMovesTheThresholdItDoesNotCreateIt guards the framing the
+// analysis rests on: large validator sets are already a gossip problem for
+// classical signatures, and post-quantum moves the threshold rather than
+// inventing the wall. If Ed25519 ever fits every target, that framing is wrong.
+func TestPostQuantumMovesTheThresholdItDoesNotCreateIt(t *testing.T) {
+	b := Budget{LinkBitsPerSec: 100_000_000, RoundSeconds: 1, Peers: 50}
+	ed, err := lookupScheme("ed25519")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	huge, err := Assess(ed, Require(Target{"ethereum-scale", 10000}, b))
+	if err != nil {
+		t.Fatalf("assess: %v", err)
+	}
+	if huge.Feasible {
+		t.Error("Ed25519 is expected NOT to fit 10,000 validators at this budget; " +
+			"the claim that scale is a gossip problem before it is a PQ problem depends on it")
+	}
+}
+
+// TestEveryApproachDeclaresWhatItLeavesUnsolved keeps the approach table
+// honest. An entry that fixes everything and leaves nothing is marketing.
+func TestEveryApproachDeclaresWhatItLeavesUnsolved(t *testing.T) {
+	if len(Approaches) == 0 {
+		t.Fatal("no approaches recorded")
+	}
+	for _, a := range Approaches {
+		if a.DoesNotFix == "" {
+			t.Errorf("approach %q does not say what it leaves unsolved", a.Name)
+		}
+		if a.Evidence == "" {
+			t.Errorf("approach %q has no evidence", a.Name)
+		}
+		if len(a.Fixes) == 0 {
+			t.Errorf("approach %q addresses nothing", a.Name)
+		}
+	}
+	// The central distinction: at least one approach must be recorded as NOT
+	// fixing vote gossip, because that is the claim the analysis turns on.
+	var sawGossipGap bool
+	for _, a := range Approaches {
+		fixesGossip := false
+		for _, f := range a.Fixes {
+			if f == SurfaceVoteGossip {
+				fixesGossip = true
+			}
+		}
+		if !fixesGossip {
+			sawGossipGap = true
+		}
+	}
+	if !sawGossipGap {
+		t.Error("no approach is recorded as leaving vote gossip unsolved; " +
+			"that separation is the point of the table")
+	}
+}

@@ -31,11 +31,36 @@ func main() {
 		migration  = flag.Bool("migration", false, "the costs that actually block a cutover: CPU, IBC updates, mitigations")
 		cores      = flag.Int("cores", 8, "cores available for signature verification, for the round-feasibility model")
 		suppress   = flag.Float64("gossip-suppression", 0.5, "fraction of vote sends CometBFT's duplicate suppression avoids, for the modelled gossip figure")
+		solve      = flag.Bool("solve", false, "what it would take: required byte cost per target validator count, and the approaches that could reach it")
 	)
 	flag.Parse()
 
 	if *listOnly {
 		printSchemes()
+		return
+	}
+
+	if *solve {
+		links, err := parseLinks(*links)
+		if err != nil {
+			fail("--links: %v", err)
+		}
+		rt, err := parseFloats(*rounds)
+		if err != nil {
+			fail("--rounds: %v", err)
+		}
+		pc, err := parseInts(*peers)
+		if err != nil {
+			fail("--peers: %v", err)
+		}
+		rep, err := SolveReport(strings.Split(*schemeNames, ","), DefaultTargets,
+			Budget{LinkBitsPerSec: links[0], RoundSeconds: rt[0], Peers: pc[0]})
+		if err != nil {
+			fail("%v", err)
+		}
+		fmt.Print(rep)
+		fmt.Println()
+		fmt.Print(ApproachTable())
 		return
 	}
 
