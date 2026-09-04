@@ -218,3 +218,133 @@ func TestPQIdentityAloneDoesNotSecureRecordedTraffic(t *testing.T) {
 		t.Errorf("README claims the KEM (%d B) costs less than the identity upgrade (%d B)", kemCost, identityCost)
 	}
 }
+
+// TestVerifyIsNotTheConstraint pins the CPU conclusion. The common worry is
+// that post-quantum signatures make the round too slow to finalize. Measured,
+// ML-DSA-65 verification is the same order as Ed25519 — it is signing that is
+// slow, and signing happens twice per round rather than 2(n-1) times. If
+// verification ever becomes an order of magnitude worse, the README's
+// "bandwidth is the constraint, not CPU" claim is wrong and this fails.
+func TestVerifyIsNotTheConstraint(t *testing.T) {
+	ed, err := lookupScheme("ed25519")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	pq, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	edCPU, err := MeasureCPU(ed, 50)
+	if err != nil {
+		t.Fatalf("ed25519 cpu: %v", err)
+	}
+	pqCPU, err := MeasureCPU(pq, 50)
+	if err != nil {
+		t.Fatalf("ml-dsa-65 cpu: %v", err)
+	}
+	if !edCPU.Measured || !pqCPU.Measured {
+		t.Fatal("both schemes should be measurable; CometBFT ships both")
+	}
+
+	// Generous bound: timing on a loaded machine is noisy, and the claim is
+	// "same order", not a precise ratio.
+	if pqCPU.Verify > 10*edCPU.Verify {
+		t.Errorf("ML-DSA-65 verify %v is more than 10x Ed25519 %v; the README claims the same order",
+			pqCPU.Verify, edCPU.Verify)
+	}
+
+	// The load-bearing claim: at a realistic set and round, verification is a
+	// small fraction of the budget.
+	f := AssessRound(100, 1.0, pqCPU.Verify, 8)
+	if !f.Fits {
+		t.Errorf("verification of 100 validators does not fit a 1s round on 8 cores: %v", f.WithCores)
+	}
+	if f.Share > 0.25 {
+		t.Errorf("verification is %.1f%% of a 1s round at 100 validators; the README says it is not the constraint", f.Share*100)
+	}
+}
+
+// TestIBCUpdateGrowsWithTheScheme pins the migration cost that actually blocks a
+// cutover on a chain with live IBC connections: every counterparty downloads a
+// commit and, on a set change, the validator set.
+func TestIBCUpdateGrowsWithTheScheme(t *testing.T) {
+	ed, err := lookupScheme("ed25519")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	pq, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	edUp, err := MeasureClientUpdate(ed, 100)
+	if err != nil {
+		t.Fatalf("ed25519 update: %v", err)
+	}
+	pqUp, err := MeasureClientUpdate(pq, 100)
+	if err != nil {
+		t.Fatalf("ml-dsa-65 update: %v", err)
+	}
+
+	if pqUp.TotalBytes <= edUp.TotalBytes {
+		t.Fatalf("post-quantum client update (%d B) should exceed classical (%d B)",
+			pqUp.TotalBytes, edUp.TotalBytes)
+	}
+	ratio := float64(pqUp.TotalBytes) / float64(edUp.TotalBytes)
+	if ratio < 20 {
+		t.Errorf("client update grew only %.1fx; the README reports roughly 31x at 100 validators", ratio)
+	}
+	// Both halves must be present; a zero validator set would mean the
+	// measurement silently lost the set-change cost.
+	if pqUp.ValidatorSetBytes == 0 || pqUp.CommitBytes == 0 {
+		t.Error("both the commit and the validator set must contribute to a client update")
+	}
+}
+
+// TestAggregationIsMarkedUnavailable guards the one row in the mitigation table
+// that carries the structural point: the classical answer to a large validator
+// set does not transfer to lattice signatures.
+func TestAggregationIsMarkedUnavailable(t *testing.T) {
+	scheme, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	ms, err := Mitigations(scheme, 100)
+	if err != nil {
+		t.Fatalf("mitigations: %v", err)
+	}
+
+	var sawAggregation, sawCompact bool
+	for _, m := range ms {
+		if m.Name == "BLS-style signature aggregation" {
+			sawAggregation = true
+			if m.Applicable {
+				t.Error("BLS aggregation must be marked unavailable for a lattice scheme")
+			}
+		}
+		if m.Name == "compact votes (BlockID by reference)" {
+			sawCompact = true
+			if m.RoundTripCost >= ms[0].RoundTripCost {
+				t.Error("compact votes should cost less per round than the shipped path")
+			}
+		}
+	}
+	if !sawAggregation || !sawCompact {
+		t.Error("the mitigation table lost a row it is supposed to carry")
+	}
+}
+
+// TestGossipModelIsBoundedByTheUpperBound guards the suppression model from
+// producing a figure above the broadcast bound, which would be incoherent.
+func TestGossipModelIsBoundedByTheUpperBound(t *testing.T) {
+	for _, s := range []float64{-1, 0, 0.5, 1, 2} {
+		g := EstimateGossip(6854, 100, 50, s)
+		if g.ModelledBytes > g.UpperBoundBytes {
+			t.Errorf("suppression %v produced %d B, above the upper bound %d B", s, g.ModelledBytes, g.UpperBoundBytes)
+		}
+		if g.ModelledBytes < 0 {
+			t.Errorf("suppression %v produced negative traffic", s)
+		}
+	}
+}

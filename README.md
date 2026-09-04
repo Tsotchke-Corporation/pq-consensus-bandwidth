@@ -173,6 +173,7 @@ is wrong by more than an order of magnitude.
 ```
 pq-consensus-bandwidth                       # default schemes, vote path
 pq-consensus-bandwidth --handshake           # the peer handshake analysis
+pq-consensus-bandwidth --migration           # CPU, IBC updates, gossip model, mitigations
 pq-consensus-bandwidth --list-schemes
 pq-consensus-bandwidth --schemes ml-dsa-65 --validators 4,16,64,150 \
     --links 50Mbit,100Mbit,1Gbit --rounds 1,3,6 --peers 20 \
@@ -197,21 +198,81 @@ measurements. The `--handshake` output labels each leg by source.
 Pinned to CometBFT **v0.40.0**. `go test ./...` asserts the figures above; if an upstream bump
 changes an encoding, the tests fail and the published numbers are known to be stale.
 
+---
+
+## The rest of a migration
+
+`--migration` covers what vote size does not.
+
+### CPU is not the constraint
+
+Measured with the implementations CometBFT ships, on an Apple M2 Ultra:
+
+| Scheme | Sign | Verify |
+|---|---:|---:|
+| ed25519 | 16 µs | 29 µs |
+| ml-dsa-65 | 308 µs | 45 µs |
+| composite ed25519 + ml-dsa-65 | 270 µs | 73 µs |
+
+The asymmetry is the useful part. **Signing** is ~19× slower and happens twice per round.
+**Verification** is the operation that runs 2(n−1) times, and it is within 1.6× of Ed25519.
+
+At 100 validators, 1-second rounds, 8 cores, verification is **1 ms — 0.1% of the round budget**.
+A chain that rejected ML-DSA on a guess about CPU rejected it on the wrong axis. Bandwidth is the
+constraint; the processor is not close to being one.
+
+The model is serial verification of 2(n−1) votes divided by cores. It ignores batching, proposal
+and block-part handling, and time waiting on the network. It is a floor on the CPU question, not a
+round-time simulation.
+
+### IBC is what actually blocks a cutover
+
+Every counterparty chain downloads a commit per update, and the validator set whenever it changes.
+At 100 validators:
+
+| Scheme | Commit | Validator set | Total per update |
+|---|---:|---:|---:|
+| ed25519 | 10,578 B | 6,405 B | 16,983 B |
+| ml-dsa-65 | 335,278 B | 198,705 B | 533,983 B |
+| composite ed25519 + ml-dsa-65 | 342,478 B | 202,705 B | 545,183 B |
+
+**A 31× increase in what every connected chain must fetch.** Measured with CometBFT's own `Commit`
+and `ValidatorSet` types, which is what 07-tendermint wraps; excludes the IBC envelope, small
+beside a set of post-quantum signatures. Every counterparty must be able to verify the scheme
+before you enable it, so this is a coordination problem as much as a bandwidth one.
+
+### Which mitigations exist
+
+| Change | Per round | Available | Why |
+|---|---:|---|---|
+| none (as shipped) | 6,854 B | yes | one prevote and one precommit, each with a full signature |
+| compact votes (BlockID by reference) | 6,722 B | yes | saves 2% — the signature dominates, so trimming around it barely helps |
+| BLS-style aggregation | — | **no** | ML-DSA and SLH-DSA have no aggregation or threshold construction |
+| signing committee | bounded by committee | yes | the only lever here that scales |
+
+That "no" is the structural fact. BLS lets a classical chain compress *n* signatures into one,
+which is why large validator sets are affordable there. **No standardised post-quantum signature
+scheme offers that.** So the levers are fewer signers, fewer bytes around the signature, or more
+bandwidth — and only the first changes the order of the problem.
+
+---
+
 ## What this does not tell you
 
 **The ceiling is an upper bound, and a necessary condition rather than a sufficient one.**
 `bytes_per_round(n) = n × (prevote + precommit) × peers` assumes every validator forwards every
-vote to every peer. Real CometBFT tracks which votes a peer already holds and skips them, so
-actual traffic is at or below this. It excludes protocol framing, retransmission and latency.
+vote to every peer. Real CometBFT tracks which votes a peer already holds and skips them, so actual
+traffic is below this. `--migration` reports a modelled figure alongside the bound, but the
+suppression fraction is a **parameter, not a measurement** — a packet capture on a running mesh
+would replace it. Size against the upper bound.
 
-**It says nothing about whether rounds still finalize.** Fitting on the NIC is not the same as
-completing a round: signing and verification time, `timeout_propose` and `timeout_prevote`
-sensitivity, and round-trip latency all matter and none is modeled here. A validator set that
-fits on paper can still miss rounds. Measure round time on your own hardware.
+**Nothing here is measured on a running network.** These are message sizes and CPU timings, not a
+testnet. The round-feasibility model settles the CPU question and does not model
+`timeout_propose`/`timeout_prevote` behaviour, retransmission, or the extra-round probability that
+comes from late votes. A set that fits on paper can still miss rounds.
 
-**It does not cover the rest of a real migration**: IBC light-client header size and counterparty
-readiness, `block.max_bytes` retuning, mixed validator sets during rotation, or custom staking
-modules. The Cosmos SDK v0.55 upgrade guide is the authority on those.
+**It does not cover** `block.max_bytes` retuning, mixed validator sets during rotation, or custom
+staking modules. The Cosmos SDK v0.55 upgrade guide is the authority on those.
 
 Falcon signature lengths vary. The tables use the published average; the tool also reports the
 practical maximum, where a Falcon-512 precommit is 870 B rather than 784 B. Size a link budget on

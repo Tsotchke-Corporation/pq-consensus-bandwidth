@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func main() {
@@ -27,11 +28,33 @@ func main() {
 		handshake  = flag.Bool("handshake", false, "analyse the peer handshake instead of the vote path")
 		blockSecs  = flag.Float64("block-seconds", 6, "block interval, for the storage projection")
 		storageVal = flag.Int("storage-validators", 100, "validator count for the storage projection")
+		migration  = flag.Bool("migration", false, "the costs that actually block a cutover: CPU, IBC updates, mitigations")
+		cores      = flag.Int("cores", 8, "cores available for signature verification, for the round-feasibility model")
+		suppress   = flag.Float64("gossip-suppression", 0.5, "fraction of vote sends CometBFT's duplicate suppression avoids, for the modelled gossip figure")
 	)
 	flag.Parse()
 
 	if *listOnly {
 		printSchemes()
+		return
+	}
+
+	if *migration {
+		counts, err := parseInts(*validators)
+		if err != nil {
+			fail("--validators: %v", err)
+		}
+		rt, err := parseFloats(*rounds)
+		if err != nil {
+			fail("--rounds: %v", err)
+		}
+		pc, err := parseInts(*peers)
+		if err != nil {
+			fail("--peers: %v", err)
+		}
+		if err := reportMigration(strings.Split(*schemeNames, ","), counts, rt, pc, *cores, *suppress); err != nil {
+			fail("%v", err)
+		}
 		return
 	}
 
@@ -332,4 +355,145 @@ func mustPrecommit(scheme Scheme, counts []int) int {
 		return 0
 	}
 	return s.PrecommitBlock
+}
+
+// reportMigration covers the questions bandwidth does not answer: whether the
+// round finishes, what a light client downloads, and which protocol changes
+// recover the validator set.
+func reportMigration(names []string, counts []int, rounds []float64, peers []int, cores int, suppression float64) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	fmt.Println("SIGN AND VERIFY, measured with the implementations CometBFT ships")
+	fmt.Println()
+	fmt.Fprintln(w, "SCHEME\tSIGN\tVERIFY\tNOTE")
+	var verifyFor = map[string]time.Duration{}
+	for _, n := range names {
+		sc, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		p, err := MeasureCPU(sc, 200)
+		if err != nil {
+			return err
+		}
+		if !p.Measured {
+			fmt.Fprintf(w, "%s\t-\t-\t%s\n", p.Scheme, p.Unavailable)
+			continue
+		}
+		verifyFor[sc.Name] = p.Verify
+		fmt.Fprintf(w, "%s\t%v\t%v\t\n", p.Scheme, p.Sign.Round(time.Microsecond), p.Verify.Round(time.Microsecond))
+	}
+	w.Flush()
+	fmt.Println()
+	fmt.Println("Verification is the side that runs n times per round, and it is the side that")
+	fmt.Println("post-quantum handles well. Signing is slower and runs twice.")
+	fmt.Println()
+
+	fmt.Printf("ROUND FEASIBILITY — does verification fit the round budget, on %d cores?\n\n", cores)
+	fmt.Fprintln(w, "SCHEME\tVALIDATORS\tROUND\tVERIFY TIME\tSHARE OF ROUND\tFITS")
+	for _, n := range names {
+		sc, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		v, ok := verifyFor[sc.Name]
+		if !ok {
+			continue
+		}
+		for _, c := range counts {
+			for _, rt := range rounds {
+				f := AssessRound(c, rt, v, cores)
+				verdict := "yes"
+				if !f.Fits {
+					verdict = "NO"
+				}
+				fmt.Fprintf(w, "%s\t%d\t%gs\t%v\t%.1f%%\t%s\n",
+					sc.Name, c, rt, f.WithCores.Round(time.Millisecond), f.Share*100, verdict)
+			}
+		}
+	}
+	w.Flush()
+	fmt.Println()
+	fmt.Println("Serial verification of 2(n-1) votes, divided by cores. Ignores batching,")
+	fmt.Println("proposal and block-part handling, and time spent waiting on the network.")
+	fmt.Println()
+
+	fmt.Println("IBC CLIENT UPDATE — what every counterparty downloads per update")
+	fmt.Println()
+	fmt.Fprintln(w, "SCHEME\tVALIDATORS\tCOMMIT\tVALIDATOR SET\tTOTAL")
+	for _, n := range names {
+		sc, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		for _, c := range counts {
+			u, err := MeasureClientUpdate(sc, c)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "%s\t%d\t%d B\t%d B\t%d B\n",
+				sc.Name, c, u.CommitBytes, u.ValidatorSetBytes, u.TotalBytes)
+		}
+	}
+	w.Flush()
+	fmt.Println()
+	fmt.Println("SignedHeader commit plus the validator set on a set change, measured with")
+	fmt.Println("CometBFT's own types. Excludes the IBC envelope, which is small beside these.")
+	fmt.Println("Every counterparty chain must be able to verify the scheme before you enable it.")
+	fmt.Println()
+
+	fmt.Println("GOSSIP — upper bound versus a suppression model")
+	fmt.Println()
+	fmt.Fprintln(w, "SCHEME\tVALIDATORS\tPEERS\tUPPER BOUND\tMODELLED\tSUPPRESSION")
+	for _, n := range names {
+		sc, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		sz, err := Measure(sc, counts)
+		if err != nil {
+			return err
+		}
+		for _, c := range counts {
+			for _, pr := range peers {
+				g := EstimateGossip(sz.RoundTripBytes(), c, pr, suppression)
+				fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%.0f%%\n",
+					sc.Name, c, pr, humanBytes(g.UpperBoundBytes), humanBytes(g.ModelledBytes), suppression*100)
+			}
+		}
+	}
+	w.Flush()
+	fmt.Println()
+	fmt.Println("CometBFT tracks which votes each peer already holds and skips those, so real")
+	fmt.Println("traffic is below the upper bound. The suppression fraction is a PARAMETER, not")
+	fmt.Println("a measurement: a capture on a running mesh would replace it. Size against the")
+	fmt.Println("upper bound; treat the modelled column as the optimistic end.")
+	fmt.Println()
+
+	fmt.Println("MITIGATIONS — what recovers the validator set")
+	fmt.Println()
+	for _, n := range names {
+		sc, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		ms, err := Mitigations(sc, 100)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s:\n", sc.Name)
+		w3 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w3, "  CHANGE\tPER ROUND\tAVAILABLE\tNOTE")
+		for _, m := range ms {
+			avail := "yes"
+			if !m.Applicable {
+				avail = "NO"
+			}
+			fmt.Fprintf(w3, "  %s\t%d B\t%s\t%s\n", m.Name, m.RoundTripCost, avail, m.Note)
+		}
+		w3.Flush()
+		fmt.Println()
+	}
+	fmt.Println(AggregationIsUnavailable)
+	return nil
 }
