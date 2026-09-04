@@ -61,6 +61,15 @@ var schemes = []Scheme{
 		Note: "FIPS 205, fast variant: signatures larger still",
 	},
 	{
+		// A composite of two DIFFERENT post-quantum families: if lattice
+		// assumptions fall, the hash-based limb still stands, and vice versa.
+		// Ed25519+ML-DSA does not give this - Ed25519 is broken by the same
+		// quantum computer the migration exists to survive, so that composite
+		// hedges a lattice break only while no quantum computer exists.
+		Name: "composite-ml-dsa-65-slh-dsa-128s", SigBytes: 3309 + 7856 + 8, PubKeyBytes: 1952 + 32 + 8,
+		Note: "lattice + hash, both required; the only composite here that survives a break in either family",
+	},
+	{
 		Name: "composite-ed25519-ml-dsa-65", SigBytes: 3381, PubKeyBytes: 1992,
 		Note: "hybrid: both limbs carried and both required, plus an 8-byte algorithm tag on each of the signature and the key",
 	},
