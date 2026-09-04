@@ -22,13 +22,23 @@ func main() {
 			"comma-separated link budgets, e.g. 100Mbit,1Gbit")
 		rounds = flag.String("rounds", "1,3",
 			"comma-separated round times in seconds")
-		peers    = flag.String("peers", "10,50", "comma-separated peer counts")
-		listOnly = flag.Bool("list-schemes", false, "print the known signature schemes and exit")
+		peers      = flag.String("peers", "10,50", "comma-separated peer counts")
+		listOnly   = flag.Bool("list-schemes", false, "print the known signature schemes and exit")
+		handshake  = flag.Bool("handshake", false, "analyse the peer handshake instead of the vote path")
+		blockSecs  = flag.Float64("block-seconds", 6, "block interval, for the storage projection")
+		storageVal = flag.Int("storage-validators", 100, "validator count for the storage projection")
 	)
 	flag.Parse()
 
 	if *listOnly {
 		printSchemes()
+		return
+	}
+
+	if *handshake {
+		if err := reportHandshake(strings.Split(*schemeNames, ",")); err != nil {
+			fail("%v", err)
+		}
 		return
 	}
 
@@ -57,13 +67,13 @@ func main() {
 		if i > 0 {
 			fmt.Println()
 		}
-		if err := report(scheme, counts, *blockBytes, linkBudgets, roundTimes, peerCounts); err != nil {
+		if err := report(scheme, counts, *blockBytes, linkBudgets, roundTimes, peerCounts, *storageVal, *blockSecs); err != nil {
 			fail("%s: %v", scheme.Name, err)
 		}
 	}
 }
 
-func report(scheme Scheme, counts []int, blockBytes int64, links []int64, rounds []float64, peers []int) error {
+func report(scheme Scheme, counts []int, blockBytes int64, links []int64, rounds []float64, peers []int, storageVals int, blockSecs float64) error {
 	sizes, err := Measure(scheme, counts)
 	if err != nil {
 		return err
@@ -95,6 +105,24 @@ func report(scheme Scheme, counts []int, blockBytes int64, links []int64, rounds
 	}
 	w.Flush()
 	fmt.Println()
+
+	fields, total, err := Breakdown(scheme)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "PRECOMMIT FOR A BLOCK\tBYTES\tSHARE\t")
+	for _, f := range fields {
+		fmt.Fprintf(w, "%s\t%d B\t%.1f%%\t\n", f.Name, f.Bytes, float64(f.Bytes)/float64(total)*100)
+	}
+	fmt.Fprintf(w, "total\t%d B\t100.0%%\t\n", total)
+	w.Flush()
+	fmt.Println()
+
+	if sc, ok := sizes.Commits[storageVals]; ok {
+		p := ProjectStorage(sc, storageVals, blockSecs)
+		fmt.Printf("commit signatures stored: %s per year at %d validators and %gs blocks\n\n",
+			humanBytes(p.BytesPerYear), p.Validators, p.BlockSeconds)
+	}
 
 	var ceilings []Ceiling
 	for _, link := range links {
@@ -209,4 +237,80 @@ func parseLinks(csv string) ([]int64, error) {
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "pq-consensus-bandwidth: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// reportHandshake prints the peer-handshake analysis: what CometBFT sends
+// today, what upgrading only the node identity key would cost, and what a
+// hybrid key agreement would cost. The point of the table is not the byte
+// counts. It is the last column.
+func reportHandshake(names []string) error {
+	upstream, err := UpstreamHandshake()
+	if err != nil {
+		return err
+	}
+
+	profiles := []HandshakeProfile{upstream}
+	for _, n := range names {
+		s, err := lookupScheme(n)
+		if err != nil {
+			return err
+		}
+		if s.Name == "ed25519" {
+			continue
+		}
+		a, err := PQAuthOnlyHandshake(s)
+		if err != nil {
+			return err
+		}
+		h, err := HybridKEMHandshake(s)
+		if err != nil {
+			return err
+		}
+		profiles = append(profiles, a, h)
+	}
+
+	fmt.Println("Peer handshake, outbound bytes for one side of one connection.")
+	fmt.Println("CometBFT runs Station-to-Station: ephemeral X25519 exchange, then an")
+	fmt.Println("AuthSigMessage carrying the node identity key and a transcript signature.")
+	fmt.Println()
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "HANDSHAKE\tBYTES\tKEY AGREEMENT\tRECORDED TRAFFIC SAFE")
+	for _, p := range profiles {
+		safe := "no"
+		if p.QuantumResistant {
+			safe = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", p.Name, p.Total(), p.KeyAgreement, safe)
+	}
+	w.Flush()
+
+	fmt.Println()
+	fmt.Println("Per-leg detail:")
+	w2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w2, "PROFILE\tLEG\tBYTES\tSOURCE")
+	for _, p := range profiles {
+		for _, l := range p.Legs {
+			src := "published constant"
+			if l.Measured {
+				src = "measured (protobuf marshal)"
+			}
+			fmt.Fprintf(w2, "%s\t%s\t%d\t%s\n", p.Name, l.Step, l.Bytes, src)
+		}
+	}
+	w2.Flush()
+
+	fmt.Println()
+	fmt.Println("Why the last column is the one that matters:")
+	fmt.Println("  Authentication fails LIVE. Forging a peer identity needs a quantum computer")
+	fmt.Println("  at the moment of the attack.")
+	fmt.Println("  Confidentiality fails RETROACTIVELY. An adversary records the session today")
+	fmt.Println("  and decrypts it when a quantum computer exists. Harvest now, decrypt later.")
+	fmt.Println()
+	fmt.Println("In CometBFT v0.40.0 the session key comes from X25519 alone")
+	fmt.Println("  (p2p/conn/secret_connection.go, computeDHSecret -> curve25519.X25519)")
+	fmt.Println("and the node identity key is generated as Ed25519 with no configuration hook")
+	fmt.Println("  (p2p/key.go, LoadOrGenNodeKey -> ed25519.GenPrivKey).")
+	fmt.Println("Enabling ML-DSA-65 consensus keys changes neither. It is a different surface.")
+	return nil
 }

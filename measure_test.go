@@ -105,3 +105,116 @@ func TestCeilingIsNotSearchLimited(t *testing.T) {
 		t.Errorf("ceiling = %d validators, want a positive bound", c.MaxValidators)
 	}
 }
+
+// TestHybridIsNotDoubleTheOverhead pins the claim the README leads with in its
+// hybrid section. The expectation in the public discussion on cometbft#5755 was
+// that a composite Ed25519 + ML-DSA signature "would double that overhead". It
+// does not, because the limbs are asymmetric: Ed25519 adds 64 bytes to a
+// 3,309-byte ML-DSA-65 signature. If this ever approaches 2x, the README is
+// wrong and this test says so.
+func TestHybridIsNotDoubleTheOverhead(t *testing.T) {
+	pure, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	hybrid, err := lookupScheme("composite-ed25519-ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	p, err := Measure(pure, []int{100})
+	if err != nil {
+		t.Fatalf("measure pure: %v", err)
+	}
+	h, err := Measure(hybrid, []int{100})
+	if err != nil {
+		t.Fatalf("measure hybrid: %v", err)
+	}
+
+	ratio := float64(h.PrecommitBlock) / float64(p.PrecommitBlock)
+	if ratio > 1.10 {
+		t.Errorf("hybrid precommit is %.2fx pure (%d B vs %d B); the README claims ~1.02x",
+			ratio, h.PrecommitBlock, p.PrecommitBlock)
+	}
+	if ratio < 1.0 {
+		t.Errorf("hybrid (%d B) should not be smaller than pure (%d B)", h.PrecommitBlock, p.PrecommitBlock)
+	}
+}
+
+// TestSignatureDominatesTheVote pins the field breakdown: if the signature ever
+// stops being the overwhelming majority of a post-quantum vote, the whole
+// premise of this tool has changed.
+func TestSignatureDominatesTheVote(t *testing.T) {
+	scheme, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	fields, total, err := Breakdown(scheme)
+	if err != nil {
+		t.Fatalf("breakdown: %v", err)
+	}
+	var sig int
+	for _, f := range fields {
+		if f.Name == "signature" {
+			sig = f.Bytes
+		}
+	}
+	if sig == 0 {
+		t.Fatal("no signature field in the breakdown")
+	}
+	share := float64(sig) / float64(total)
+	if share < 0.95 {
+		t.Errorf("signature is %.1f%% of an ML-DSA-65 precommit; the README says 96.6%%", share*100)
+	}
+	// The parts must account for the whole; a differential measurement that
+	// leaks bytes into no category would be silently wrong.
+	sum := 0
+	for _, f := range fields {
+		sum += f.Bytes
+	}
+	if sum != total {
+		t.Errorf("breakdown sums to %d B but the message is %d B", sum, total)
+	}
+}
+
+// TestPQIdentityAloneDoesNotSecureRecordedTraffic is the assertion behind the
+// finding. Upgrading the node identity key to a post-quantum scheme makes the
+// handshake much larger and leaves the session key derived from X25519 alone,
+// so recorded traffic stays exposed. Only adding a KEM changes that.
+func TestPQIdentityAloneDoesNotSecureRecordedTraffic(t *testing.T) {
+	pq, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	upstream, err := UpstreamHandshake()
+	if err != nil {
+		t.Fatalf("upstream handshake: %v", err)
+	}
+	authOnly, err := PQAuthOnlyHandshake(pq)
+	if err != nil {
+		t.Fatalf("auth-only handshake: %v", err)
+	}
+	hybrid, err := HybridKEMHandshake(pq)
+	if err != nil {
+		t.Fatalf("hybrid handshake: %v", err)
+	}
+
+	if upstream.QuantumResistant {
+		t.Error("upstream handshake must not be marked safe against recorded traffic")
+	}
+	if authOnly.QuantumResistant {
+		t.Error("a post-quantum identity key alone must not be marked safe: the session key is still X25519")
+	}
+	if !hybrid.QuantumResistant {
+		t.Error("the hybrid KEM handshake should be safe against recorded traffic")
+	}
+
+	// The README's arithmetic: the identity upgrade is the expensive half and
+	// buys nothing; the KEM is the cheap half and buys everything.
+	identityCost := authOnly.Total() - upstream.Total()
+	kemCost := hybrid.Total() - authOnly.Total()
+	if kemCost >= identityCost {
+		t.Errorf("README claims the KEM (%d B) costs less than the identity upgrade (%d B)", kemCost, identityCost)
+	}
+}

@@ -13,10 +13,10 @@ type Budget struct {
 // fits inside a Budget.
 type Ceiling struct {
 	Budget
-	MaxValidators  int
-	BytesAtMax     int64
-	BudgetBytes    int64
-	Utilization    float64
+	MaxValidators   int
+	BytesAtMax      int64
+	BudgetBytes     int64
+	Utilization     float64
 	LimitedBySearch bool
 }
 
