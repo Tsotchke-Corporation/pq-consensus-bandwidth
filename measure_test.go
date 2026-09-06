@@ -249,14 +249,21 @@ func TestVerifyIsNotTheConstraint(t *testing.T) {
 
 	// Generous bound: timing on a loaded machine is noisy, and the claim is
 	// "same order", not a precise ratio.
-	if pqCPU.Verify > 10*edCPU.Verify {
+	if pqCPU.VerifyP50 > 10*edCPU.VerifyP50 {
 		t.Errorf("ML-DSA-65 verify %v is more than 10x Ed25519 %v; the README claims the same order",
-			pqCPU.Verify, edCPU.Verify)
+			pqCPU.VerifyP50, edCPU.VerifyP50)
+	}
+
+	// Verification must be FLAT. That is what makes it safe to size a round on,
+	// and it is the property that distinguishes it from signing.
+	if edCPU.SignSpread() > 1.5 {
+		t.Errorf("Ed25519 signing spread is %.1fx; it has no data-dependent branch and should be flat",
+			edCPU.SignSpread())
 	}
 
 	// The load-bearing claim: at a realistic set and round, verification is a
-	// small fraction of the budget.
-	f := AssessRound(100, 1.0, pqCPU.Verify, 8)
+	// small fraction of the budget. Sized on p95, not the median.
+	f := AssessRound(100, 1.0, pqCPU.VerifyP95, 8)
 	if !f.Fits {
 		t.Errorf("verification of 100 validators does not fit a 1s round on 8 cores: %v", f.WithCores)
 	}

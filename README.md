@@ -204,18 +204,47 @@ changes an encoding, the tests fail and the published numbers are known to be st
 
 `--migration` covers what vote size does not.
 
-### CPU is not the constraint
+### CPU is not the constraint, and signing is not constant-time
 
-Measured with the implementations CometBFT ships, on an Apple M2 Ultra:
+Measured with the implementations CometBFT ships, on an Apple M2 Ultra, sampled across
+32 distinct keys because the cost turns out to depend on the key:
 
-| Scheme | Sign | Verify |
-|---|---:|---:|
-| ed25519 | 16 µs | 29 µs |
-| ml-dsa-65 | 308 µs | 45 µs |
-| composite ed25519 + ml-dsa-65 | 270 µs | 73 µs |
+| Scheme | Sign p50 | Sign p95 | Verify p50 | Verify p95 | Sign spread (p95/p50) |
+|---|---:|---:|---:|---:|---:|
+| ed25519 | 16 µs | 17 µs | 28 µs | 28 µs | **1.0×** |
+| ml-dsa-65 | 241 µs | 912 µs | 45 µs | 50 µs | **3.8×** |
+| composite ed25519 + ml-dsa-65 | 258 µs | 900 µs | 73 µs | 78 µs | 3.5× |
 
-The asymmetry is the useful part. **Signing** is ~19× slower and happens twice per round.
-**Verification** is the operation that runs 2(n−1) times, and it is within 1.6× of Ed25519.
+Two results, and the second one is the one worth having.
+
+**Verification is not the problem.** It runs 2(n−1) times per round, it is within 1.6× of
+Ed25519, and it is flat. At 100 validators, 1-second rounds, 8 cores, verification is
+**1 ms — 0.1% of the round budget**. A chain that rejected ML-DSA on a guess about CPU
+rejected it on the wrong axis. Bandwidth is the constraint.
+
+**Signing is variable, and the variance is key-dependent.** ML-DSA signing uses rejection
+sampling: it loops, discarding candidate signatures until one falls in range, and the
+number of retries depends on the secret polynomial. So the cost is a property of the key,
+not just of the sample. Ed25519 sits flat at 1.0×; ML-DSA-65 spreads **3.8×** from median
+to p95.
+
+This is reported as percentiles across many keys because a mean over one key is not a
+stable statistic — an earlier single-key, mean-based version of this tool returned figures
+from 137 µs to 308 µs for the same operation, and produced the incoherent result that a
+composite signing *two* limbs looked cheaper than one of them alone. If you see a single
+mean signing number quoted for ML-DSA anywhere, including in an earlier version of this
+README, distrust it.
+
+The spread is measured at p95/p50 rather than max/p50 on purpose: the maximum is dominated
+by OS scheduling, and Ed25519 — which has no data-dependent branch at all — shows a
+max/p50 above 2× on this machine purely from being descheduled. Attributing that to the
+algorithm would be wrong.
+
+**Why it matters beyond benchmarking.** FIPS 204 signing is not constant-time by
+construction, and this is a secret-key operation whose duration varies with the secret. Any
+implementation signing with a long-lived validator key deserves a constant-time audit. This
+tool measures that the variance exists; it does not attempt to show the variance is
+exploitable, and nothing here is a claim that it is.
 
 At 100 validators, 1-second rounds, 8 cores, verification is **1 ms — 0.1% of the round budget**.
 A chain that rejected ML-DSA on a guess about CPU rejected it on the wrong axis. Bandwidth is the

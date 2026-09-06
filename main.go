@@ -390,28 +390,43 @@ func reportMigration(names []string, counts []int, rounds []float64, peers []int
 
 	fmt.Println("SIGN AND VERIFY, measured with the implementations CometBFT ships")
 	fmt.Println()
-	fmt.Fprintln(w, "SCHEME\tSIGN\tVERIFY\tNOTE")
+	fmt.Fprintln(w, "SCHEME\tSIGN p50\tSIGN p95\tSIGN max\tVERIFY p50\tVERIFY p95\tSIGN SPREAD")
 	var verifyFor = map[string]time.Duration{}
 	for _, n := range names {
 		sc, err := lookupScheme(n)
 		if err != nil {
 			return err
 		}
-		p, err := MeasureCPU(sc, 200)
+		p, err := MeasureCPU(sc, 2000)
 		if err != nil {
 			return err
 		}
 		if !p.Measured {
-			fmt.Fprintf(w, "%s\t-\t-\t%s\n", p.Scheme, p.Unavailable)
+			fmt.Fprintf(w, "%s\t-\t-\t-\t-\t-\t%s\n", p.Scheme, p.Unavailable)
 			continue
 		}
-		verifyFor[sc.Name] = p.Verify
-		fmt.Fprintf(w, "%s\t%v\t%v\t\n", p.Scheme, p.Sign.Round(time.Microsecond), p.Verify.Round(time.Microsecond))
+		verifyFor[sc.Name] = p.VerifyP95 // size the round on the tail, not the median
+		fmt.Fprintf(w, "%s\t%v\t%v\t%v\t%v\t%v\t%.1fx\n", p.Scheme,
+			p.SignP50.Round(time.Microsecond), p.SignP95.Round(time.Microsecond),
+			p.SignMax.Round(time.Microsecond),
+			p.VerifyP50.Round(time.Microsecond), p.VerifyP95.Round(time.Microsecond),
+			p.SignSpread())
 	}
 	w.Flush()
 	fmt.Println()
-	fmt.Println("Verification is the side that runs n times per round, and it is the side that")
-	fmt.Println("post-quantum handles well. Signing is slower and runs twice.")
+	fmt.Println("Verification runs 2(n-1) times per round; signing runs twice. Verification is")
+	fmt.Println("the side post-quantum handles well, and it is also the side that is FLAT.")
+	fmt.Println()
+	fmt.Println("SIGN SPREAD is p95/p50, not max/p50: the maximum is dominated by OS scheduling,")
+	fmt.Println("and Ed25519 - which has no data-dependent branch - shows a max/p50 near 2.3x on")
+	fmt.Println("this machine purely from being descheduled. At p95 the difference is")
+	fmt.Println("attributable. ML-DSA signing uses rejection sampling: it loops, discarding")
+	fmt.Println("candidates until one falls in range, so its cost is data-dependent and a MEAN IS")
+	fmt.Println("NOT A STABLE STATISTIC - repeated runs of an earlier mean-based version of this")
+	fmt.Println("tool returned 145us to 308us for the same operation. That is why percentiles are")
+	fmt.Println("reported. It is also a side-channel surface: FIPS 204 signing is not")
+	fmt.Println("constant-time by construction, which is what makes secret-dependent timing worth")
+	fmt.Println("auditing in any implementation that signs with a long-lived validator key.")
 	fmt.Println()
 
 	fmt.Printf("ROUND FEASIBILITY — does verification fit the round budget, on %d cores?\n\n", cores)
