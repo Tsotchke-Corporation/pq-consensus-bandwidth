@@ -431,3 +431,52 @@ func TestEveryApproachDeclaresWhatItLeavesUnsolved(t *testing.T) {
 			"that separation is the point of the table")
 	}
 }
+
+// TestBothCompositesArePublishable guards the drift that a reviewer caught: the
+// lattice-plus-hash hedge existed in schemes.go while every README table showed
+// only the Ed25519 hybrid, so a reader would conclude that hybrids cost +2% in
+// general. They do not. This asserts the gap is large enough to be worth saying
+// out loud, so nobody can quietly drop the expensive row again and leave the
+// cheap one implying something false.
+func TestBothCompositesArePublishable(t *testing.T) {
+	pure, err := lookupScheme("ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	cheap, err := lookupScheme("composite-ed25519-ml-dsa-65")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	hedge, err := lookupScheme("composite-ml-dsa-65-slh-dsa-128s")
+	if err != nil {
+		t.Fatalf("the lattice-hedged composite must exist; the README documents its cost: %v", err)
+	}
+
+	p, err := Measure(pure, []int{100})
+	if err != nil {
+		t.Fatalf("measure pure: %v", err)
+	}
+	c, err := Measure(cheap, []int{100})
+	if err != nil {
+		t.Fatalf("measure cheap composite: %v", err)
+	}
+	h, err := Measure(hedge, []int{100})
+	if err != nil {
+		t.Fatalf("measure hedged composite: %v", err)
+	}
+
+	cheapRatio := float64(c.PrecommitBlock) / float64(p.PrecommitBlock)
+	hedgeRatio := float64(h.PrecommitBlock) / float64(p.PrecommitBlock)
+
+	if cheapRatio > 1.10 {
+		t.Errorf("Ed25519 hybrid is %.2fx pure; README says ~1.02x", cheapRatio)
+	}
+	if hedgeRatio < 2.5 {
+		t.Errorf("lattice+hash hedge is only %.2fx pure; README says 3.3x and calls it expensive", hedgeRatio)
+	}
+	// The point of publishing both: they must not be confusable.
+	if hedgeRatio < 2*cheapRatio {
+		t.Error("the two composites are close enough that quoting one for the other would be defensible; " +
+			"the README's distinction assumes they are not")
+	}
+}

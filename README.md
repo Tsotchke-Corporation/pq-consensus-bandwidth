@@ -34,18 +34,35 @@ available today hardens the surface with the *later* deadline, and leaves the su
 
 Run `pq-consensus-bandwidth --handshake` to see it:
 
-| Handshake | Bytes | Key agreement | Safe against recorded traffic |
-|---|---:|---|---|
-| upstream v0.40.0 (X25519 + Ed25519 node key) | 134 | X25519 | no |
-| PQ node identity only (X25519 + ML-DSA-65 node key) | 5,301 | X25519 | **no** |
-| hybrid KEM (X25519 + ML-KEM-768, ML-DSA-65 node key) | 7,573 | X25519 + ML-KEM-768, both required | yes |
+| Handshake | Bytes | Key agreement | Safe against **recorded traffic** | Safe against **forged peer identity** once Ed25519 falls |
+|---|---:|---|---|---|
+| upstream v0.40.0 (X25519 + Ed25519 node key) | 134 | X25519 | no | no |
+| PQ node identity only (X25519 + ML-DSA-65 node key) | 5,301 | X25519 | **no** | **yes** |
+| hybrid KEM (X25519 + ML-KEM-768, ML-DSA-65 node key) | 7,573 | X25519 + ML-KEM-768, both required | yes | yes |
 
-Outbound bytes, one side of one connection. The middle row is the trap: it costs 5,167 extra
-bytes per connection and changes nothing about recorded traffic, because authentication is not
-confidentiality. The step that actually closes the exposure is the third row, and its marginal
-cost over the middle row is 2,272 bytes — the ML-KEM-768 encapsulation key and ciphertext.
+Outbound bytes, one side of one connection.
 
-**The expensive part buys nothing. The cheap part buys everything.**
+**Read the two right-hand columns separately, because they fail on different clocks** — the same
+distinction this section opened with, applied inside the handshake.
+
+The middle row costs 5,167 extra bytes and buys **authentication**: once a quantum computer can
+forge Ed25519, an ML-DSA node key still stops an attacker impersonating a peer. That is real and
+it is not nothing. What it does not buy is **confidentiality**, because the session key is still
+derived from X25519 alone — so a packet capture taken today is decrypted later regardless. The
+identity signature and the key agreement protect different things.
+
+The third row adds 2,272 bytes for the ML-KEM-768 encapsulation key and ciphertext, and that is
+the step that closes the recorded-traffic exposure.
+
+So, precisely rather than pithily: **against a recording adversary the expensive step buys
+nothing and the cheap step buys everything. Against a future impersonating adversary the
+expensive step is the one that matters.** A chain that cares about both needs both, and the
+whole thing costs 7,573 bytes.
+
+One scope note: the `--handshake` figures are *constructed* message sizes — a real
+`AuthSigMessage` marshaled with CometBFT's own protobuf, plus FIPS 203 constants for the KEM.
+The "safe" columns describe the **key-agreement choice**. They are not a claim about transcript
+binding, downgrade resistance, or the AEAD, and nothing here is a patched `SecretConnection`.
 
 This is not a vulnerability in CometBFT and nothing here is exploitable today. It is a scope
 observation: [cometbft#5755](https://github.com/cometbft/cometbft/issues/5755), the issue that
@@ -68,6 +85,12 @@ CometBFT v0.40.0, 20-byte consensus addresses, one validator's happy-path round.
 | **composite ed25519 + ml-dsa-65** | 3,381 B | **3,499 B** | 342,478 B | 4.08% |
 | ml-dsa-87 | 4,627 B | 4,745 B | 467,078 B | 5.57% |
 | slh-dsa-128s | 7,856 B | 7,974 B | 789,978 B | 9.42% |
+| **composite ml-dsa-65 + slh-dsa-128s** | 11,173 B | **11,291 B** | 1,121,678 B | **13.37%** |
+
+**The two composites are not the same kind of thing and the difference is expensive.** The
+Ed25519 hybrid costs +2.1% over pure ML-DSA. The lattice-plus-hash hedge costs **3.3×**. See
+[below](#hybrid-costs-2-not-100) for why only one of them survives a break in the lattice
+assumption.
 
 A prevote and a precommit that both carry a BlockID are byte-identical — the vote type is a
 one-byte enum. What costs 70 bytes is the BlockID, not the word "precommit". A vote for nil is
@@ -100,6 +123,7 @@ Commit signatures are stored in every block forever. At 100 validators and 6-sec
 | composite ed25519 + ml-dsa-65 | 1.6 TiB |
 | ml-dsa-87 | 2.2 TiB |
 | slh-dsa-128s | 3.8 TiB |
+| composite ml-dsa-65 + slh-dsa-128s | 5.4 TiB |
 
 1.6 TiB is 1.76 TB, which independently corroborates the ~1.8 TB/year figure in the Cosmos SDK
 v0.55 upgrade guide for the same configuration.
@@ -149,6 +173,7 @@ By scheme, at 100 Mbit/s, 1-second rounds, 50 peers:
 | **composite ed25519 + ml-dsa-65** | **35** |
 | ml-dsa-87 | 26 |
 | slh-dsa-128s | 15 |
+| **composite ml-dsa-65 + slh-dsa-128s** | **11** |
 
 ---
 
@@ -162,9 +187,37 @@ The intuition fails because the two limbs are wildly asymmetric. Ed25519 contrib
 to a 3,309-byte ML-DSA-65 signature. Doubling would require two limbs of similar size.
 
 This matters for migration posture. Hybrid means a forged signature requires breaking *both*
-schemes, which is the conservative stance while ML-DSA is young — and it turns out to be nearly
-free on the wire. Anyone who ruled hybrid out on bandwidth grounds ruled it out on a number that
-is wrong by more than an order of magnitude.
+schemes, which is the conservative stance while ML-DSA is young — and this one turns out to be
+nearly free on the wire. Anyone who ruled it out on bandwidth grounds ruled it out on a number
+that is wrong by more than an order of magnitude.
+
+### But not every hybrid is cheap, and the cheap one hedges less
+
+The +2.1% figure is specific to **Ed25519 + ML-DSA-65**, and there is a limit to what that
+composite protects against. Ed25519 falls to the same quantum computer the migration exists to
+survive. So the classical limb hedges a *lattice* weakness only for as long as no quantum
+computer exists — which is exactly the window in which a lattice weakness matters least.
+
+A composite that hedges the lattice assumption itself needs two **post-quantum** families:
+
+| | Ed25519 + ML-DSA-65 | ML-DSA-65 + SLH-DSA-128s |
+|---|---|---|
+| Families | classical + lattice | lattice + hash |
+| Precommit | 3,499 B | 11,291 B |
+| Cost over pure ML-DSA-65 | **+2.1%** | **3.3×** |
+| Validator ceiling | 35 | **11** |
+| Storage per year @ 100 vals | 1.6 TiB | 5.4 TiB |
+| Survives a lattice break | **no**, once a CRQC exists | **yes** |
+| Survives a hash break | yes | no |
+
+Hash-based security rests only on hash-function properties, with no algebraic structure to
+attack, which is why CNSA 2.0 mandates LMS/XMSS for firmware signing. It is the most
+conservative post-quantum posture available.
+
+It is also the most expensive thing in this repository. Conservatism about cryptographic
+assumptions is purchasable, and this is the price: eleven validators instead of thirty-five at
+the same link budget. Quote the +2.1% and the 3.3× together, or the cheap number reads as a
+general claim about hybrids that it is not.
 
 ---
 
