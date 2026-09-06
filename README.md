@@ -65,10 +65,19 @@ The "safe" columns describe the **key-agreement choice**. They are not a claim a
 binding, downgrade resistance, or the AEAD, and nothing here is a patched `SecretConnection`.
 
 This is not a vulnerability in CometBFT and nothing here is exploitable today. It is a scope
-observation: [cometbft#5755](https://github.com/cometbft/cometbft/issues/5755), the issue that
+observation. [cometbft#5755](https://github.com/cometbft/cometbft/issues/5755), the issue that
 led to ML-DSA-65 support, opened by asking about "validator signing keys **and peer identity**",
-and was closed in May 2026 after the signature work shipped. The discussion on it is entirely
-about signature size and gossip bandwidth. We could not find a follow-up covering the handshake.
+and was closed in May 2026 after the signature work shipped. Its discussion is entirely about
+signature size and gossip bandwidth.
+
+**What we searched, so you can judge the claim:** the issue tracker for "post-quantum" and
+"quantum" in titles, and pull requests for "post-quantum", "quantum", "ML-KEM" and "secret
+connection", on 2026-09-06. The only post-quantum PR is
+[#5875](https://github.com/cometbft/cometbft/pull/5875), which adds the ML-DSA-65 key type; every
+`secret_connection` PR is 2024 buffering work with no cryptographic change. We did **not** search
+discussions, the spec repository, or any chat channel — so read this as "no in-flight work is
+visible in issues or PRs", not as "nobody is working on it". If there is a plan we missed, we
+would rather be told than be right.
 
 ---
 
