@@ -51,11 +51,30 @@ type HandshakeLeg struct {
 }
 
 // HandshakeProfile is a complete peer handshake, one side's outbound bytes.
+//
+// The two safety fields are separate because the properties fail on different
+// clocks, and a single "quantum resistant" boolean cannot express that. An
+// ML-DSA node key with an X25519 key agreement is safe against a future
+// impersonator and not safe against an adversary recording packets today; the
+// reverse combination is not offered by anything here but would be equally
+// lopsided. Collapsing the two into one flag is how the earlier version of this
+// tool ended up asserting that a post-quantum identity key "buys nothing".
 type HandshakeProfile struct {
-	Name             string
-	Legs             []HandshakeLeg
-	KeyAgreement     string
-	QuantumResistant bool
+	Name         string
+	Legs         []HandshakeLeg
+	KeyAgreement string
+
+	// SafeAgainstRecordedTraffic is confidentiality: does the session key
+	// survive an adversary who captured the traffic today and gets a quantum
+	// computer later? This is the harvest-now-decrypt-later property, and it
+	// comes from the KEY AGREEMENT alone.
+	SafeAgainstRecordedTraffic bool
+
+	// SafeAgainstForgedIdentity is authentication: once a quantum computer can
+	// forge Ed25519, can an attacker impersonate a peer? This comes from the
+	// NODE IDENTITY KEY alone, and it is a live attack rather than a
+	// retroactive one.
+	SafeAgainstForgedIdentity bool
 }
 
 func (h HandshakeProfile) Total() int {
@@ -142,14 +161,20 @@ func UpstreamHandshake() (HandshakeProfile, error) {
 			{Step: "AuthSigMessage (node key + transcript signature)", Bytes: auth, Measured: true,
 				Note: "marshaled with CometBFT's own protobuf code"},
 		},
-		KeyAgreement:     "X25519 Diffie-Hellman",
-		QuantumResistant: false,
+		KeyAgreement:               "X25519 Diffie-Hellman",
+		SafeAgainstRecordedTraffic: false,
+		SafeAgainstForgedIdentity:  false, // Ed25519 node key
 	}, nil
 }
 
 // PQAuthOnlyHandshake is the shape a chain gets if it upgrades only the node
-// identity key to a post-quantum scheme and leaves the key agreement alone. It
-// is bigger and it is still not confidential against a recording adversary.
+// identity key to a post-quantum scheme and leaves the key agreement alone.
+//
+// It is NOT useless, and an earlier version of this file implied it was. It
+// buys authentication against a future forger. What it does not buy is
+// confidentiality, because the session key is still derived from X25519 alone,
+// so a capture taken today is decrypted later regardless.
+//
 // Upstream does not offer this today: the node key is hardcoded Ed25519.
 func PQAuthOnlyHandshake(scheme Scheme) (HandshakeProfile, error) {
 	auth, err := authSigMessageBytes(scheme)
@@ -164,8 +189,9 @@ func PQAuthOnlyHandshake(scheme Scheme) (HandshakeProfile, error) {
 			{Step: "AuthSigMessage (node key + transcript signature)", Bytes: auth, Measured: true,
 				Note: "grows with the identity scheme"},
 		},
-		KeyAgreement:     "X25519 Diffie-Hellman",
-		QuantumResistant: false,
+		KeyAgreement:               "X25519 Diffie-Hellman",
+		SafeAgainstRecordedTraffic: false, // the session key is still X25519 alone
+		SafeAgainstForgedIdentity:  true,  // this is what the extra ~5 KB buys
 	}, nil
 }
 
@@ -189,7 +215,8 @@ func HybridKEMHandshake(scheme Scheme) (HandshakeProfile, error) {
 			{Step: "AuthSigMessage (node key + transcript signature)", Bytes: auth, Measured: true,
 				Note: "grows with the identity scheme"},
 		},
-		KeyAgreement:     "X25519 + ML-KEM-768, both required",
-		QuantumResistant: true,
+		KeyAgreement:               "X25519 + ML-KEM-768, both required",
+		SafeAgainstRecordedTraffic: true,
+		SafeAgainstForgedIdentity:  true,
 	}, nil
 }

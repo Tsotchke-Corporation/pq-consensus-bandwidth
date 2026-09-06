@@ -312,16 +312,23 @@ round-time simulation.
 Every counterparty chain downloads a commit per update, and the validator set whenever it changes.
 At 100 validators:
 
-| Scheme | Commit | Validator set | Total per update |
-|---|---:|---:|---:|
-| ed25519 | 10,578 B | 6,405 B | 16,983 B |
-| ml-dsa-65 | 335,278 B | 198,705 B | 533,983 B |
-| composite ed25519 + ml-dsa-65 | 342,478 B | 202,705 B | 545,183 B |
+| Scheme | Commit | Validator set | Total per update | vs classical |
+|---|---:|---:|---:|---:|
+| ed25519 | 10,578 B | 6,405 B | 16,983 B | 1× |
+| ml-dsa-65 | 335,278 B | 198,705 B | 533,983 B | **31×** |
+| composite ed25519 + ml-dsa-65 | 342,478 B | 202,705 B | 545,183 B | 32× |
+| composite ml-dsa-65 + slh-dsa-128s | 1,121,678 B | 202,705 B | **1,324,383 B** | **78×** |
 
-**A 31× increase in what every connected chain must fetch.** Measured with CometBFT's own `Commit`
-and `ValidatorSet` types, which is what 07-tendermint wraps; excludes the IBC envelope, small
-beside a set of post-quantum signatures. Every counterparty must be able to verify the scheme
-before you enable it, so this is a coordination problem as much as a bandwidth one.
+**A 31× increase in what every connected chain must fetch**, and **78×** for the lattice-plus-hash
+hedge. That last row is why the hedge is not simply "3.3× on the wire": a client update passes
+1 MB, and light-client bandwidth becomes the binding constraint before gossip does. A chain with
+many IBC counterparties pays that on every update, to every one of them.
+
+Measured with CometBFT's own `Commit` and `ValidatorSet` types, which is what 07-tendermint wraps.
+**Excludes the IBC envelope** — the `Header` wrapper, trusted-height fields and `Any` typing — which
+is small beside a set of post-quantum signatures but means the real object is somewhat larger than
+these figures, not smaller. Every counterparty must also be able to *verify* the scheme before you
+enable it, so this is a coordination problem as much as a bandwidth one.
 
 ### Which mitigations exist
 

@@ -332,13 +332,16 @@ func reportHandshake(names []string) error {
 	fmt.Println()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "HANDSHAKE\tBYTES\tKEY AGREEMENT\tRECORDED TRAFFIC SAFE")
-	for _, p := range profiles {
-		safe := "no"
-		if p.QuantumResistant {
-			safe = "yes"
+	fmt.Fprintln(w, "HANDSHAKE\tBYTES\tKEY AGREEMENT\tSAFE: RECORDED TRAFFIC\tSAFE: FORGED IDENTITY")
+	yesno := func(b bool) string {
+		if b {
+			return "yes"
 		}
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", p.Name, p.Total(), p.KeyAgreement, safe)
+		return "no"
+	}
+	for _, p := range profiles {
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", p.Name, p.Total(), p.KeyAgreement,
+			yesno(p.SafeAgainstRecordedTraffic), yesno(p.SafeAgainstForgedIdentity))
 	}
 	w.Flush()
 
@@ -358,11 +361,17 @@ func reportHandshake(names []string) error {
 	w2.Flush()
 
 	fmt.Println()
-	fmt.Println("Why the last column is the one that matters:")
-	fmt.Println("  Authentication fails LIVE. Forging a peer identity needs a quantum computer")
-	fmt.Println("  at the moment of the attack.")
-	fmt.Println("  Confidentiality fails RETROACTIVELY. An adversary records the session today")
-	fmt.Println("  and decrypts it when a quantum computer exists. Harvest now, decrypt later.")
+	fmt.Println("Read the two safety columns SEPARATELY. They fail on different clocks:")
+	fmt.Println("  FORGED IDENTITY fails LIVE. An adversary needs the quantum computer at the")
+	fmt.Println("  moment they impersonate a peer. A post-quantum node key is what stops it,")
+	fmt.Println("  and that is what the ~5 KB identity upgrade buys.")
+	fmt.Println("  RECORDED TRAFFIC fails RETROACTIVELY. An adversary captures the session today")
+	fmt.Println("  and decrypts it once a quantum computer exists. Only the key agreement")
+	fmt.Println("  changes that, and the ML-KEM leg costs ~2.3 KB.")
+	fmt.Println()
+	fmt.Println("So: against a RECORDING adversary the expensive step buys nothing and the cheap")
+	fmt.Println("step buys everything. Against a FUTURE IMPERSONATING adversary the expensive")
+	fmt.Println("step is the one that matters. A chain that cares about both needs both.")
 	fmt.Println()
 	fmt.Println("In CometBFT v0.40.0 the session key comes from X25519 alone")
 	fmt.Println("  (p2p/conn/secret_connection.go, computeDHSecret -> curve25519.X25519)")

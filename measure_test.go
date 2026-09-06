@@ -200,14 +200,38 @@ func TestPQIdentityAloneDoesNotSecureRecordedTraffic(t *testing.T) {
 		t.Fatalf("hybrid handshake: %v", err)
 	}
 
-	if upstream.QuantumResistant {
+	// Confidentiality comes from the KEY AGREEMENT alone.
+	if upstream.SafeAgainstRecordedTraffic {
 		t.Error("upstream handshake must not be marked safe against recorded traffic")
 	}
-	if authOnly.QuantumResistant {
-		t.Error("a post-quantum identity key alone must not be marked safe: the session key is still X25519")
+	if authOnly.SafeAgainstRecordedTraffic {
+		t.Error("a post-quantum identity key alone must not be marked safe against recorded " +
+			"traffic: the session key is still derived from X25519")
 	}
-	if !hybrid.QuantumResistant {
+	if !hybrid.SafeAgainstRecordedTraffic {
 		t.Error("the hybrid KEM handshake should be safe against recorded traffic")
+	}
+
+	// Authentication comes from the NODE IDENTITY KEY alone, and this is the
+	// half an earlier version of this tool wrongly called worthless. The
+	// identity upgrade buys exactly this and the README says so.
+	if upstream.SafeAgainstForgedIdentity {
+		t.Error("an Ed25519 node key cannot be safe against a forger who can break Ed25519")
+	}
+	if !authOnly.SafeAgainstForgedIdentity {
+		t.Error("a post-quantum node key IS what stops future peer impersonation; " +
+			"marking it unsafe reproduces the 'buys nothing' error")
+	}
+	if !hybrid.SafeAgainstForgedIdentity {
+		t.Error("the hybrid profile carries a post-quantum node key and should be safe against forgery")
+	}
+
+	// The two properties must be independent, or the model has collapsed back
+	// into one boolean: exactly one profile here is safe in one column and not
+	// the other.
+	if authOnly.SafeAgainstRecordedTraffic == authOnly.SafeAgainstForgedIdentity {
+		t.Error("the PQ-identity-only profile is the case that proves the two properties are " +
+			"separable; if both columns agree, the distinction is not being modelled")
 	}
 
 	// The README's arithmetic: the identity upgrade is the expensive half and
